@@ -5,13 +5,20 @@ from __future__ import annotations
 import plotly.graph_objects as go
 import streamlit as st
 
-from data_loader import load_all
+from data_loader import check_mongodb_status, load_all
 
 st.set_page_config(page_title="Sinais", page_icon="📡", layout="wide")
 
 st.title("📡 Sinais & Estratégia")
 
 modo = st.selectbox("Modo", ["paper", "testnet", "live"], index=0)
+
+status = check_mongodb_status()
+if status["ok"]:
+    st.sidebar.success("🟢 MongoDB Atlas")
+else:
+    st.sidebar.error(f"🔴 MongoDB: {status['message']}")
+    st.warning(f"⚠️ Sem conexão com o MongoDB Atlas: {status['message']}")
 
 
 @st.cache_data(ttl=30)

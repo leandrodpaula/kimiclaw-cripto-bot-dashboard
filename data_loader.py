@@ -1,38 +1,47 @@
-"""Carrega dados do MongoDB Atlas ou, opcionalmente, de arquivos JSON locais.
+"""Carrega dados do MongoDB Atlas.
 
-Por padrão conecta no Atlas usando ``MONGODB_URI`` e ``MONGODB_DB`` do ``.env``.
-Se ``BOT_DATA_PATH`` estiver definido, lê os JSONs locais do bot (modo legacy/fallback).
+O dashboard lê exclusivamente do Atlas usando ``MONGODB_URI`` e ``MONGODB_DB``.
+A configuração pode vir do ``.env`` local (desenvolvimento) ou dos secrets do
+Streamlit Cloud (produção). Se o MongoDB estiver indisponível, as funções retornam
+estruturas vazias e ``check_mongodb_status()`` expõe o estado da conexão para o
+frontend.
 """
 
 from __future__ import annotations
 
-import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
+import streamlit as st
 from dotenv import load_dotenv
 
 # Carrega .env antes de qualquer coisa.
 load_dotenv()
 
 
+def _get_secret(key: str) -> str | None:
+    """Lê uma configuração dos secrets do Streamlit Cloud ou do ambiente local."""
+    try:
+        value = st.secrets.get(key)
+        if value:
+            return str(value)
+    except Exception:
+        pass
+    return os.environ.get(key)
+
+
 def _mongodb_uri() -> str | None:
-    return os.environ.get("MONGODB_URI")
+    return _get_secret("MONGODB_URI")
 
 
 def _mongodb_db() -> str:
-    return os.environ.get("MONGODB_DB") or "kimi_trader"
+    return _get_secret("MONGODB_DB") or "kimi_trader"
 
 
 def _default_data_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "kimiclaw-cripto-bot" / "data"
-
-
-def _data_dir() -> Path:
-    env = os.environ.get("BOT_DATA_PATH")
-    return Path(env) if env else _default_data_dir()
 
 
 def _load_json(path: Path, default: dict | None = None) -> dict:
@@ -43,7 +52,7 @@ def _load_json(path: Path, default: dict | None = None) -> dict:
     try:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except (json.JSONDecodeError, OSError):
+    except (Exception,):
         return default
 
 
@@ -63,7 +72,7 @@ def _parse_iso(value: str | None) -> datetime | None:
 # MongoDB client singleton
 # ---------------------------------------------------------------------------
 _mongo_client = None
-_mongodb_available: bool | None = None
+_mongodb_status: dict | None = None
 
 
 def _get_client():
@@ -90,51 +99,74 @@ def _db():
     return _get_client()[_mongodb_db()]
 
 
-def _check_mongodb() -> bool:
-    """Tenta pingar o Atlas; em caso de erro, desativa MongoDB para a sessão."""
-    global _mongodb_available
-    if _mongodb_available is not None:
-        return _mongodb_available
+def check_mongodb_status(force: bool = False) -> dict:
+    """Retorna {"ok": bool, "message": str} sobre a conexão com o Atlas.
+
+    O resultado é cacheado por sessão a menos que ``force=True``.
+    """
+    global _mongodb_status
+    if not force and _mongodb_status is not None:
+        return _mongodb_status
+
     if _mongodb_uri() is None:
-        _mongodb_available = False
-        return False
+        _mongodb_status = {
+            "ok": False,
+            "message": "MONGODB_URI não configurado no .env",
+        }
+        return _mongodb_status
+
     try:
         _get_client().admin.command("ping")
-        _mongodb_available = True
+        _mongodb_status = {"ok": True, "message": "Conectado ao MongoDB Atlas"}
     except Exception as exc:
-        print(f"[data_loader] MongoDB indisponível: {exc}")
-        _mongodb_available = False
-    return _mongodb_available
+        _mongodb_status = {
+            "ok": False,
+            "message": f"MongoDB indisponível: {exc}",
+        }
+    return _mongodb_status
 
 
-def _using_mongodb() -> bool:
-    return _check_mongodb() and _data_dir() is None
+def _safe_load(collection_name: str, mode: str, sort: dict | None = None) -> list[dict]:
+    """Carrega documentos de uma collection com tratamento de erro."""
+    try:
+        if not check_mongodb_status()["ok"]:
+            return []
+        coll = _db()[collection_name]
+        query = {"mode": mode}
+        cursor = coll.find(query, {"_id": 0})
+        if sort:
+            cursor = cursor.sort(sort)
+        return list(cursor)
+    except Exception as exc:
+        print(f"[data_loader] Erro ao carregar {collection_name}: {exc}")
+        return []
 
 
 # ---------------------------------------------------------------------------
 # Loaders
 # ---------------------------------------------------------------------------
 def load_bot_state(mode: str = "paper") -> dict:
-    if _using_mongodb():
+    try:
+        if not check_mongodb_status()["ok"]:
+            return {}
         doc = _db()["bot_state"].find_one({"mode": mode}, sort={"updated_at": -1})
         if doc:
             doc.pop("_id", None)
             return doc
-        return {}
-    path = _data_dir() / "bot_state.json"
-    return _load_json(path)
+    except Exception as exc:
+        print(f"[data_loader] Erro ao carregar bot_state: {exc}")
+    return {}
 
 
 def load_positions(mode: str = "paper") -> pd.DataFrame:
-    if _using_mongodb():
-        rows = list(_db()["positions"].find({"mode": mode}, {"_id": 0}))
-    else:
-        raw = _load_json(_data_dir() / "positions.json", {"positions": []})
-        rows = raw.get("positions", [])
+    rows = _safe_load("positions", mode)
     df = pd.DataFrame(rows)
     if df.empty:
         return df
-    numeric_cols = ["entry_price", "quantity", "invested_usdt", "stop_loss", "take_profit", "trailing_peak", "score"]
+    numeric_cols = [
+        "entry_price", "quantity", "invested_usdt", "stop_loss",
+        "take_profit", "trailing_peak", "score",
+    ]
     for col in numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -144,11 +176,7 @@ def load_positions(mode: str = "paper") -> pd.DataFrame:
 
 
 def load_history(mode: str = "paper") -> pd.DataFrame:
-    if _using_mongodb():
-        rows = list(_db()["trades"].find({"mode": mode}, {"_id": 0}).sort("closed_at", -1))
-    else:
-        raw = _load_json(_data_dir() / "history.json", {"trades": []})
-        rows = raw.get("trades", [])
+    rows = _safe_load("trades", mode, sort={"closed_at": -1})
     df = pd.DataFrame(rows)
     if df.empty:
         return df
@@ -165,17 +193,15 @@ def load_history(mode: str = "paper") -> pd.DataFrame:
 
 
 def load_equity(mode: str = "paper") -> pd.DataFrame:
-    if _using_mongodb():
-        rows = list(_db()["equity_snapshots"].find({"mode": mode}, {"_id": 0}).sort("timestamp", 1))
-    else:
-        raw = _load_json(_data_dir() / "equity.json", {"snapshots": []})
-        rows = raw.get("snapshots", [])
+    rows = _safe_load("equity_snapshots", mode, sort={"timestamp": 1})
     df = pd.DataFrame(rows)
     if df.empty:
         return df
     if "timestamp" in df.columns:
         df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
-    numeric_cols = ["balance_usdt", "realized_pnl_usdt", "unrealized_pnl_usdt", "total_pnl_usdt"]
+    numeric_cols = [
+        "balance_usdt", "realized_pnl_usdt", "unrealized_pnl_usdt", "total_pnl_usdt",
+    ]
     for col in numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -185,17 +211,13 @@ def load_equity(mode: str = "paper") -> pd.DataFrame:
 
 
 def load_signals_history(mode: str = "paper") -> pd.DataFrame:
-    if _using_mongodb():
-        cycles = list(_db()["signal_cycles"].find({"mode": mode}, {"_id": 0}).sort("timestamp", 1))
-    else:
-        raw = _load_json(_data_dir() / "signals_history.json", {"cycles": []})
-        cycles = raw.get("cycles", [])
+    rows = _safe_load("signal_cycles", mode, sort={"timestamp": 1})
 
-    rows = []
-    for cycle in cycles:
+    out = []
+    for cycle in rows:
         ts = cycle.get("timestamp")
         for symbol, info in cycle.get("signals", {}).items():
-            rows.append(
+            out.append(
                 {
                     "timestamp": ts,
                     "mode": cycle.get("mode", mode),
@@ -205,7 +227,7 @@ def load_signals_history(mode: str = "paper") -> pd.DataFrame:
                     "price": info.get("price"),
                 }
             )
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(out)
     if df.empty:
         return df
     if "timestamp" in df.columns:
@@ -215,25 +237,62 @@ def load_signals_history(mode: str = "paper") -> pd.DataFrame:
     return df
 
 
-def load_settings() -> dict:
-    if _using_mongodb():
-        # Settings ainda é um arquivo local; se o dashboard compartilha a pasta, lê JSON.
-        # Futuramente pode migrar para uma collection ``settings``.
-        if _data_dir():
-            return _load_json(_data_dir().parent / "config" / "settings.json")
-        return {}
-    path = _data_dir().parent / "config" / "settings.json"
-    return _load_json(path)
+def load_settings(mode: str = "paper") -> dict:
+    """Carrega configurações do modo no MongoDB Atlas."""
+    try:
+        if not check_mongodb_status()["ok"]:
+            return {}
+        doc = _db()["settings"].find_one({"mode": mode}, {"_id": 0})
+        if doc:
+            doc.pop("mode", None)
+            doc.pop("updated_at", None)
+            return doc
+    except Exception as exc:
+        print(f"[data_loader] Erro ao carregar settings: {exc}")
+    return {}
 
 
-def load_coins() -> pd.DataFrame:
-    if _using_mongodb():
-        if _data_dir():
-            raw = _load_json(_data_dir().parent / "config" / "coins.json", {"coins": []})
-            return pd.DataFrame(raw.get("coins", []))
-        return pd.DataFrame()
-    raw = _load_json(_data_dir().parent / "config" / "coins.json", {"coins": []})
-    return pd.DataFrame(raw.get("coins", []))
+def save_settings(mode: str, settings: dict) -> bool:
+    """Salva configurações do modo no MongoDB Atlas."""
+    try:
+        if not check_mongodb_status(force=True)["ok"]:
+            return False
+        payload = dict(settings)
+        payload["mode"] = mode
+        _db()["settings"].replace_one({"mode": mode}, payload, upsert=True)
+        return True
+    except Exception as exc:
+        print(f"[data_loader] Erro ao salvar settings: {exc}")
+        return False
+
+
+def load_coins(mode: str = "paper") -> dict:
+    """Carrega lista de moedas do modo no MongoDB Atlas."""
+    try:
+        if not check_mongodb_status()["ok"]:
+            return {"coins": []}
+        doc = _db()["coins"].find_one({"mode": mode}, {"_id": 0})
+        if doc:
+            doc.pop("mode", None)
+            doc.pop("updated_at", None)
+            return doc
+    except Exception as exc:
+        print(f"[data_loader] Erro ao carregar coins: {exc}")
+    return {"coins": []}
+
+
+def save_coins(mode: str, coins: dict) -> bool:
+    """Salva lista de moedas do modo no MongoDB Atlas."""
+    try:
+        if not check_mongodb_status(force=True)["ok"]:
+            return False
+        payload = dict(coins)
+        payload["mode"] = mode
+        _db()["coins"].replace_one({"mode": mode}, payload, upsert=True)
+        return True
+    except Exception as exc:
+        print(f"[data_loader] Erro ao salvar coins: {exc}")
+        return False
 
 
 def load_all(mode: str = "paper") -> dict:
@@ -243,6 +302,6 @@ def load_all(mode: str = "paper") -> dict:
         "history": load_history(mode),
         "equity": load_equity(mode),
         "signals": load_signals_history(mode),
-        "settings": load_settings(),
-        "coins": load_coins(),
+        "settings": load_settings(mode),
+        "coins": load_coins(mode),
     }

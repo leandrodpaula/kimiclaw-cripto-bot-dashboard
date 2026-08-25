@@ -10,7 +10,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from data_loader import load_all
+from data_loader import check_mongodb_status, load_all
 from metrics import calc_trade_metrics
 from recommendations import generate_recommendations
 
@@ -58,6 +58,13 @@ st.sidebar.caption("Dashboard de acompanhamento")
 modos = ["paper", "testnet", "live"]
 modo_selecionado = st.sidebar.selectbox("Modo", modos, index=0)
 
+# Status de conexão com o MongoDB.
+status = check_mongodb_status()
+if status["ok"]:
+    st.sidebar.success("🟢 MongoDB Atlas")
+else:
+    st.sidebar.error(f"🔴 MongoDB: {status['message']}")
+
 
 @st.cache_data(ttl=30)
 def _load(mode: str):
@@ -102,6 +109,9 @@ with col_mode:
     st.markdown(f"### {cor_modo}")
 
 st.markdown("Visão geral da estratégia, métricas de performance e recomendações do agente analítico.")
+
+if not status["ok"]:
+    st.warning(f"⚠️ Dashboard sem conexão com o MongoDB Atlas: {status['message']}")
 
 # ---------------------------------------------------------------------------
 # KPIs
