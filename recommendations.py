@@ -141,7 +141,7 @@ def generate_recommendations(
                     "category": "rentabilidade",
                     "priority": "alta",
                     "message": (
-                        f"Média de ganho ({metrics['avg_win']:.2f}) é menor que média de perda ({abs(metrics['avg_loss']:.2f)}). "
+                        f"Média de ganho ({metrics['avg_win']:.2f}) é menor que média de perda ({abs(metrics['avg_loss']):.2f}). "
                         "Ajuste para TP/SL maior que 2:1. Exemplo: SL 2% e TP 4%+."
                     ),
                 }
