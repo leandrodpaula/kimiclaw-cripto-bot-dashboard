@@ -12,22 +12,21 @@ st.set_page_config(page_title="Performance", page_icon="📊", layout="wide")
 
 st.title("📊 Performance Detalhada")
 
+modo = st.selectbox("Modo", ["paper", "testnet", "live"], index=0)
+
+
 @st.cache_data(ttl=30)
-def _load():
-    return load_all()
+def _load(mode: str):
+    return load_all(mode)
 
 
-data = _load()
+data = _load(modo)
 state = data["state"]
 history = data["history"]
 equity = data["equity"]
 settings = data["settings"]
 
-modo = st.selectbox("Modo", ["paper", "testnet", "live"], index=0)
-history_mode = history[history["mode"] == modo] if not history.empty and "mode" in history.columns else history
-equity_mode = equity[equity["mode"] == modo] if not equity.empty and "mode" in equity.columns else equity
-
-metrics = calc_trade_metrics(history_mode)
+metrics = calc_trade_metrics(history)
 
 # KPIs expandidos
 st.markdown("---")
@@ -50,8 +49,8 @@ cols2[4].metric("Risco / Retorno Est.", f"{abs(metrics['avg_win'] / metrics['avg
 st.markdown("---")
 st.subheader("Equity Curve & Drawdown")
 
-if not equity_mode.empty and "balance_usdt" in equity_mode.columns:
-    dd_df = calc_equity_drawdown(equity_mode)
+if not equity.empty and "balance_usdt" in equity.columns:
+    dd_df = calc_equity_drawdown(equity)
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=dd_df["timestamp"], y=dd_df["balance_usdt"], mode="lines", name="Equity", line=dict(color="#22c55e")))
@@ -70,7 +69,7 @@ else:
 st.markdown("---")
 st.subheader("P&L Diário")
 
-daily = calc_daily_pnl(history_mode)
+daily = calc_daily_pnl(history)
 if not daily.empty:
     fig3 = go.Figure()
     colors = ["#22c55e" if x >= 0 else "#ef4444" for x in daily["pnl_usdt"]]

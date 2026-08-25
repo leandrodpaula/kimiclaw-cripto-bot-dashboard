@@ -49,20 +49,6 @@ st.markdown(
 # ---------------------------------------------------------------------------
 # Carga de dados
 # ---------------------------------------------------------------------------
-@st.cache_data(ttl=30)
-def _load():
-    return load_all()
-
-
-data = _load()
-state = data["state"]
-positions = data["positions"]
-history = data["history"]
-equity = data["equity"]
-signals = data["signals"]
-settings = data["settings"]
-coins = data["coins"]
-
 # ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
@@ -70,7 +56,22 @@ st.sidebar.markdown("# 🦞 KimiClaw Crypto")
 st.sidebar.caption("Dashboard de acompanhamento")
 
 modos = ["paper", "testnet", "live"]
-modo_selecionado = st.sidebar.selectbox("Modo", modos, index=modos.index(state.get("mode", "paper")))
+modo_selecionado = st.sidebar.selectbox("Modo", modos, index=0)
+
+
+@st.cache_data(ttl=30)
+def _load(mode: str):
+    return load_all(mode)
+
+
+data = _load(modo_selecionado)
+state = data["state"]
+positions = data["positions"]
+history = data["history"]
+equity = data["equity"]
+signals = data["signals"]
+settings = data["settings"]
+coins = data["coins"]
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Configuração do bot")
@@ -88,14 +89,7 @@ st.sidebar.markdown("---")
 st.sidebar.caption(f"Último ciclo: {state.get('last_cycle_at', 'nunca')}")
 st.sidebar.caption(f"Offline fallback: {'sim' if state.get('offline_fallback') else 'não'}")
 
-# ---------------------------------------------------------------------------
-# Filtro por modo
-# ---------------------------------------------------------------------------
-history_mode = history[history["mode"] == modo_selecionado] if not history.empty and "mode" in history.columns else history
-equity_mode = equity[equity["mode"] == modo_selecionado] if not equity.empty and "mode" in equity.columns else equity
-positions_mode = positions[positions["mode"] == modo_selecionado] if not positions.empty and "mode" in positions.columns else positions
-
-metrics = calc_trade_metrics(history_mode)
+metrics = calc_trade_metrics(history)
 
 # ---------------------------------------------------------------------------
 # Título
@@ -133,7 +127,7 @@ kpi5.metric("Drawdown Máx.", f"{metrics['max_drawdown_pct']:.2f}%")
 st.markdown("---")
 st.subheader("🤖 Recomendações do Agente")
 
-recommendations = generate_recommendations(history_mode, equity_mode, signals, state, settings)
+recommendations = generate_recommendations(history, equity, signals, state, settings)
 for rec in recommendations:
     priority_class = f"priority-{rec['priority']}"
     st.markdown(
@@ -152,19 +146,17 @@ for rec in recommendations:
 st.markdown("---")
 st.subheader("📈 Equity Curve")
 
-if not equity_mode.empty and "balance_usdt" in equity_mode.columns:
+if not equity.empty and "balance_usdt" in equity.columns:
     fig = go.Figure()
-    for modo in equity["mode"].unique() if not equity.empty else [modo_selecionado]:
-        sub = equity[equity["mode"] == modo]
-        fig.add_trace(
-            go.Scatter(
-                x=sub["timestamp"],
-                y=sub["balance_usdt"],
-                mode="lines",
-                name=modo.capitalize(),
-                line=dict(width=2),
-            )
+    fig.add_trace(
+        go.Scatter(
+            x=equity["timestamp"],
+            y=equity["balance_usdt"],
+            mode="lines",
+            name=modo_selecionado.capitalize(),
+            line=dict(width=2),
         )
+    )
     fig.update_layout(
         template="plotly_dark",
         height=420,
@@ -206,7 +198,7 @@ else:
 st.markdown("---")
 st.subheader("💼 Posições Abertas")
 
-if not positions_mode.empty:
-    st.dataframe(positions_mode, use_container_width=True, hide_index=True)
+if not positions.empty:
+    st.dataframe(positions, use_container_width=True, hide_index=True)
 else:
     st.info("Nenhuma posição aberta no momento.")

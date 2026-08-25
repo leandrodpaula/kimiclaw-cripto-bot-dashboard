@@ -11,18 +11,18 @@ st.set_page_config(page_title="Sinais", page_icon="📡", layout="wide")
 
 st.title("📡 Sinais & Estratégia")
 
+modo = st.selectbox("Modo", ["paper", "testnet", "live"], index=0)
+
+
 @st.cache_data(ttl=30)
-def _load():
-    return load_all()
+def _load(mode: str):
+    return load_all(mode)
 
 
-data = _load()
+data = _load(modo)
 signals = data["signals"]
 settings = data["settings"]
 coins = data["coins"]
-
-modo = st.selectbox("Modo", ["paper", "testnet", "live"], index=0)
-signals_mode = signals[signals["mode"] == modo] if not signals.empty and "mode" in signals.columns else signals
 
 st.markdown("---")
 st.subheader("Configuração Atual da Estratégia")
@@ -49,15 +49,15 @@ cols[3].metric("Máx Posições", risk_cfg.get("max_open_positions"))
 st.markdown("---")
 st.subheader("Últimos Sinais por Ativo")
 
-if not signals_mode.empty:
-    latest = signals_mode.sort_values("timestamp").drop_duplicates(subset=["symbol"], keep="last").sort_values("score", ascending=False)
+if not signals.empty:
+    latest = signals.sort_values("timestamp").drop_duplicates(subset=["symbol"], keep="last").sort_values("score", ascending=False)
     latest["emoji"] = latest["signal"].map({"BUY": "🟢", "SELL": "🔴", "HOLD": "⚪"})
     st.dataframe(latest[["emoji", "symbol", "signal", "score", "price", "timestamp"]], use_container_width=True, hide_index=True)
 
     # Distribuição de sinais
     st.markdown("---")
     st.subheader("Distribuição de Sinais")
-    counts = signals_mode["signal"].value_counts().reset_index()
+    counts = signals["signal"].value_counts().reset_index()
     counts.columns = ["signal", "count"]
     fig = go.Figure(go.Pie(labels=counts["signal"], values=counts["count"], hole=0.4))
     fig.update_layout(template="plotly_dark", height=400, margin=dict(l=20, r=20, t=30, b=20))
@@ -66,11 +66,11 @@ if not signals_mode.empty:
     # Evolução do score
     st.markdown("---")
     st.subheader("Evolução do Score por Par")
-    symbols = sorted(signals_mode["symbol"].unique())
+    symbols = sorted(signals["symbol"].unique())
     selected = st.multiselect("Selecionar pares", symbols, default=symbols[:3])
     fig2 = go.Figure()
     for sym in selected:
-        sub = signals_mode[signals_mode["symbol"] == sym].sort_values("timestamp")
+        sub = signals[signals["symbol"] == sym].sort_values("timestamp")
         fig2.add_trace(go.Scatter(x=sub["timestamp"], y=sub["score"], mode="lines+markers", name=sym))
     fig2.add_hline(y=strategy_cfg.get("min_score", 60), line_dash="dash", line_color="red", annotation_text="min score")
     fig2.update_layout(template="plotly_dark", height=450, margin=dict(l=20, r=20, t=30, b=20), xaxis_title="Data", yaxis_title="Score")
